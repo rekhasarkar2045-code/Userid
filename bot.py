@@ -1,7 +1,8 @@
+import asyncio
 import logging
 import sqlite3
 import requests
-from telegram import Update, ChatMember
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -9,7 +10,12 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from config import BOT_TOKEN, API_URL
+
+# ─────────────────────────────────────────────
+#  Configuration
+# ─────────────────────────────────────────────
+BOT_TOKEN = "8604572355:AAHplc24nwqf8frKRV6-TJyZJcxGpy1Zbyg"   # 👈 Replace with your BotFather token
+API_URL   = "https://tg-number-api-wbka.vercel.app/"
 
 # ─────────────────────────────────────────────
 #  Logging
@@ -61,14 +67,13 @@ def get_userid_by_username(username: str):
     c.execute("SELECT user_id, full_name FROM users WHERE username = ?", (username.lower(),))
     row = c.fetchone()
     conn.close()
-    return row  # (user_id, full_name) or None
+    return row
 
 
 # ─────────────────────────────────────────────
-#  Decorators / Guards
+#  Guard — Group Only
 # ─────────────────────────────────────────────
 def group_only(func):
-    """Restrict handler to group/supergroup chats only."""
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat = update.effective_chat
         if chat.type not in ("group", "supergroup"):
@@ -82,17 +87,13 @@ def group_only(func):
 
 
 # ─────────────────────────────────────────────
-#  Passive tracker — save every user who speaks
+#  Passive Tracker
 # ─────────────────────────────────────────────
 async def track_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Silently record user_id ↔ username for every group message."""
-    msg = update.effective_message
     user = update.effective_user
     chat = update.effective_chat
-
     if not user or chat.type not in ("group", "supergroup"):
         return
-
     save_user(
         user_id=user.id,
         username=user.username or "",
@@ -102,7 +103,7 @@ async def track_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─────────────────────────────────────────────
-#  /start
+#  /start & /help
 # ─────────────────────────────────────────────
 @group_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -113,7 +114,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 *Commands:*\n\n"
         "🔍 `/userid @username`\n"
         "   ↳ Get Telegram User ID\n\n"
-        "📞 `/ser [user_id]`\n"
+        "📞 `/ser [user\\_id]`\n"
         "   ↳ Lookup phone number by ID\n\n"
         "ℹ️ `/help` — Show this menu\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -122,9 +123,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-# ─────────────────────────────────────────────
-#  /help
-# ─────────────────────────────────────────────
 @group_only
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
@@ -143,7 +141,6 @@ async def userid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     raw = context.args[0].lstrip("@").strip()
-
     if not raw:
         await update.message.reply_text("❌ Invalid username.", parse_mode="Markdown")
         return
@@ -159,7 +156,7 @@ async def userid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 *Name:* {full_name}\n"
             f"🔖 *Username:* @{raw}\n"
             f"🆔 *User ID:* `{uid}`\n\n"
-            "💡 _Use_ `/ser " + str(uid) + "` _to lookup number._"
+            f"💡 _Use_ `/ser {uid}` _to lookup number\\._"
         )
     else:
         text = (
@@ -179,13 +176,12 @@ async def userid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
-            "❌ *Usage:* `/ser [user_id]`\nExample: `/ser 7420311171`",
+            "❌ *Usage:* `/ser [user\\_id]`\nExample: `/ser 7420311171`",
             parse_mode="Markdown"
         )
         return
 
     user_id = context.args[0].strip()
-
     if not user_id.isdigit():
         await update.message.reply_text(
             "❌ *Invalid ID.* User ID must be a number.",
@@ -221,7 +217,7 @@ async def ser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "║   ❌  *NOT FOUND*      ║\n"
                 "╚══════════════════════╝\n\n"
                 f"No phone number linked to ID `{user_id}`.\n\n"
-                "_This user may have hidden their number or it's not in the database._"
+                "_This user may have hidden their number or it's not in the database\\._"
             )
 
     except requests.exceptions.Timeout:
@@ -237,26 +233,27 @@ async def ser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ─────────────────────────────────────────────
-#  Main
+#  Main — Python 3.14 compatible
 # ─────────────────────────────────────────────
-def main():
+async def main():
     init_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Passive tracker (must be first, no filter on commands)
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, track_users), group=0)
-
-    # Commands
     app.add_handler(CommandHandler("start",  start))
     app.add_handler(CommandHandler("help",   help_cmd))
     app.add_handler(CommandHandler("userid", userid_cmd))
     app.add_handler(CommandHandler("ser",    ser_cmd))
 
     logger.info("✅ Bot started successfully.")
-    app.run_polling(drop_pending_updates=True)
+
+    async with app:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(drop_pending_updates=True)
+        await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
-    main()
-              
+    asyncio.run(main())
