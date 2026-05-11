@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sqlite3
 import requests
+from aiohttp import web
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -16,10 +17,11 @@ from telegram.ext import (
 # ─────────────────────────────────────────────
 BOT_TOKEN = "8604572355:AAHplc24nwqf8frKRV6-TJyZJcxGpy1Zbyg"   # 👈 Replace with your BotFather token
 API_URL   = "https://tg-number-api-wbka.vercel.app/"
+PORT      = 8080  # Render open port
 
 # ─────────────────────────────────────────────
 #  Logging
-# ─────────────────────────────────────────────
+# ────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
 #  Database
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────
 def init_db():
     conn = sqlite3.connect("users.db")
     c = conn.cursor()
@@ -71,28 +73,12 @@ def get_userid_by_username(username: str):
 
 
 # ─────────────────────────────────────────────
-#  Guard — Group Only
-# ─────────────────────────────────────────────
-def group_only(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        chat = update.effective_chat
-        if chat.type not in ("group", "supergroup"):
-            await update.message.reply_text(
-                "🚫 This bot is for *group use only.*",
-                parse_mode="Markdown"
-            )
-            return
-        return await func(update, context)
-    return wrapper
-
-
-# ─────────────────────────────────────────────
 #  Passive Tracker
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────
 async def track_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
-    if not user or chat.type not in ("group", "supergroup"):
+    if not user or not chat:
         return
     save_user(
         user_id=user.id,
@@ -105,7 +91,6 @@ async def track_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────────
 #  /start & /help
 # ─────────────────────────────────────────────
-@group_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "╔══════════════════════════╗\n"
@@ -117,21 +102,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📞 `/ser [user\\_id]`\n"
         "   ↳ Lookup phone number by ID\n\n"
         "ℹ️ `/help` — Show this menu\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⚠️ _Works in groups only._"
+        "━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-@group_only
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
 
 
-# ─────────────────────────────────────────────
+# ─────────────────────────────
 #  /userid @username
 # ─────────────────────────────────────────────
-@group_only
 async def userid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
@@ -152,7 +134,7 @@ async def userid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             "╔══════════════════════╗\n"
             "║   🔍  *USER ID FOUND*   ║\n"
-            "╚══════════════════════╝\n\n"
+            "╚════════════════╝\n\n"
             f"👤 *Name:* {full_name}\n"
             f"🔖 *Username:* @{raw}\n"
             f"🆔 *User ID:* `{uid}`\n\n"
@@ -161,7 +143,7 @@ async def userid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         text = (
             "⚠️ *User not found in database.*\n\n"
-            "The user must send *at least one message* in this group "
+            "The user must send *at least one message* "
             "before I can track their ID.\n\n"
             "Ask them to say something, then try again."
         )
@@ -172,7 +154,6 @@ async def userid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────────
 #  /ser [userid]
 # ─────────────────────────────────────────────
-@group_only
 async def ser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
@@ -232,15 +213,34 @@ async def ser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
+# ────────────────────────────────────────
+#  Dummy HTTP server — keeps Render happy
+# ─────────────────────────────────────────────
+async def health(request):
+    return web.Response(text="OK")
+
+
+async def start_web():
+    app = web.Application()
+    app.router.add_get("/", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info(f"✅ Web server running on port {PORT}")
+
+
 # ─────────────────────────────────────────────
 #  Main — Python 3.14 compatible
 # ─────────────────────────────────────────────
 async def main():
     init_db()
 
+    await start_web()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(MessageHandler(filters.ALL & filters.ChatType.GROUPS, track_users), group=0)
+    app.add_handler(MessageHandler(filters.ALL, track_users), group=0)
     app.add_handler(CommandHandler("start",  start))
     app.add_handler(CommandHandler("help",   help_cmd))
     app.add_handler(CommandHandler("userid", userid_cmd))
